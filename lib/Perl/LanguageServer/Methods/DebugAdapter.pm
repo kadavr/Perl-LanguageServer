@@ -630,7 +630,7 @@ sub _dapreq_pause
     {
     my ($self, $workspace, $req) = @_ ;
 
-    $self -> debugger_process -> signal ('INT') ;
+    $self -> debugger_process -> signal ('USR2') ;
     
     return {} ;
     }

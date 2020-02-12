@@ -95,7 +95,9 @@ sub DB {
   return if @skippkg and grep { $_ eq $DB::package } @skippkg;
 
   $usrctxt = "package $DB::package;";		# this won't let them modify, alas
-  local(*DB::dbline) = "::_<$DB::filename";
+  my $db_file = "$DB::filename";
+  my $db_file_relpath = Cwd::realpath($db_file);
+  local(*DB::dbline) = "::_<$db_file_relpath";
 
   my ($stop, $action);
   if (($stop,$action) = split(/\0/,$DB::dbline{$DB::lineno})) {
@@ -110,7 +112,7 @@ sub DB {
   }
   if ($DB::single || $DB::trace || $DB::signal) {
     $DB::subname = ($DB::sub =~ /\'|::/) ? $DB::sub : "${DB::package}::$DB::sub"; #';
-    DB->loadfile($DB::filename, $DB::lineno);
+    DB->loadfile($db_file_relpath, $DB::lineno);
   }
   $evalarg = $action, &eval if $action;
   if ($DB::single || $DB::signal) {
@@ -334,6 +336,21 @@ sub lines {
 ####
 # loadfile($file, $line)
 #
+
+sub _get_db_file {
+	my ($class, $file) = ($_[0], $_[1]);
+	my $match;
+	for my $db_file (keys %main::){
+		if($db_file =~ m|^_<|){
+			my $db_filetmp = substr($db_file,2);
+			#$class->logger("Debug_get_db_file " . $db_filetmp . '  ' . $file);
+			if(Cwd::realpath($db_filetmp) eq $file){
+				return ($db_file, $main::{$db_file});
+			}
+		}
+	}
+}
+
 sub loadfile {
   my $s = shift;
   my($file, $line) = @_;
@@ -539,8 +556,8 @@ sub output {}
 # client init
 #
 for (@clients) { $_->init }
-
-$SIG{'INT'} = \&DB::catch;
+print STDERR "Install SIG USR1";
+$SIG{'USR2'} = \&DB::catch;
 
 # disable this if stepping through END blocks is desired
 # (looks scary and deconstructivist with Swat)
@@ -566,7 +583,7 @@ use File::Basename ;
 use vars qw{@dbline %dbline $dbline} ;
 
 our $max_display = 5 ;
-our $debug = 0 ;
+our $debug = 1 ;
 our $session = $ENV{PLSDI_SESSION} || 1 ;
 our $socket ;
 our $json = JSON -> new -> utf8(1) -> ascii(1) ;
@@ -1107,7 +1124,18 @@ sub req_evaluate
     }
 
 # ---------------------------------------------------------------------------
-
+# sub _get_db_file {
+# 	my $file = $_[0];
+# 	my $match;
+# 	for my $db_file (keys %main::){
+# 		if($db_file =~ m|^_<|){
+# 			my $db_filetmp = substr($db_file,2);
+# 			if(Cwd::realpath($db_filetmp) eq $file){
+# 				return $main::{$db_file};
+# 			}
+# 		}
+# 	}
+# }
 sub req_threads
     {
     my @threads ;
@@ -1232,11 +1260,11 @@ sub _set_breakpoint
     my $subname ;
     my $filename ;
     ($location, $subname, $filename) = DB::_find_subline($location) if ($location =~ /\D/);
-
+    my ($dbfile_path, $dbfile) = $class->_get_db_file($filename);
     return (0, "Subroutine not found.") unless $location ;
     return (0) if (!$location) ;
     
-    local *dbline = "::_<$filename" if ($filename) ;
+    local *dbline = "::$dbfile_path" if ($filename) ;
     for (my $line = $location; $line <= $location + 10 && $location < @dbline; $line++)
         {
         if ($dbline[$line] != 0)
@@ -1257,7 +1285,10 @@ sub abs_path_nd {
    my $abs_path = shift;
    my $dir      = shift ;
    return $abs_path if $abs_path=~m{^/$};
-    
+   require Cwd;
+   my $abs_path = Cwd::realpath(File::Spec->catfile($dir ? $dir : Cwd::cwd(), $abs_path));
+   warn "DEBUG!! " . $abs_path;
+   return $abs_path;
    unless( $abs_path=~/^\// ){
       if ($dir) {
           $abs_path = $dir."/$abs_path";
@@ -1305,13 +1336,13 @@ sub req_breakpoint
     my $breakpoints  = $params -> {breakpoints} ;
     my $filename     = $params -> {filename} ;
     my $real_filename = $params -> {dbg_filename} || $filename ;
-
+    my ($dbfile_path, $dbfile) = $class->_get_db_file($filename);
     Class::Refresh -> refresh if ($refresh) ;
 
     if ($filename)
         {
         my %seen ;
-        while (!defined $main::{'_<' . $real_filename} && -l $real_filename)
+        while (!defined $dbfile && -l $real_filename)
             {
             my $dir = File::Basename::dirname ($real_filename) ;
             $real_filename = readlink ($real_filename) ;
@@ -1320,7 +1351,7 @@ sub req_breakpoint
             last if ($seen{$real_filename}++) ;
             } 
 
-        if (!defined $main::{'_<' . $real_filename})
+        if (!defined $dbfile)
             {
             $postponed_breakpoints{$filename} = $breakpoints ;
             foreach my $bp (@$breakpoints)
@@ -1331,11 +1362,11 @@ sub req_breakpoint
             }
         }    
      
-    local *dbline = "::_<$real_filename" if ($real_filename) ;
+    local *dbline = "::$dbfile_path" if ($real_filename) ;
     if ($real_filename)
         {
         # Switch the magical hash temporarily.
-        local *DB::dbline = "::_<$real_filename";
+        local *DB::dbline = "::$dbfile_path";
         $class -> clr_breaks () ;
         $class -> clr_actions () ;
         }
@@ -1406,9 +1437,11 @@ sub req_can_break
     my $end_line    = $params -> {end_line} || $line ;
     my $filename    = $params -> {filename} ;
     my $real_filename = $filename ;
-
+    my ($dbfile_path, $dbfile) = $class->_get_db_file($filename);
+    use Data::Dumper;
+    $class->logger("Match DBfile: " . Dumper($dbfile));
     my %seen ;
-    while (!defined $main::{'_<' . $real_filename} && -l $real_filename)
+    while (!defined $dbfile && -l $real_filename)
         {
         my $dir = File::Basename::dirname ($real_filename) ;
         $real_filename = readlink ($real_filename) ;
@@ -1416,14 +1449,16 @@ sub req_can_break
         $real_filename = abs_path_nd ($real_filename, $dir) ;
         last if ($seen{$real_filename}++) ;
         } 
+    $class->logger("File not find in stash " . ('_<' . $real_filename)) if (!defined $dbfile);
 
-    return { breakpoints => [] } if (!defined $main::{'_<' . $real_filename}) ;
+#    $class->logger("Breakable file " . Dumper($main::{'_<' . $real_filename}));
+    return { breakpoints => [] } if (!$dbfile) ;
 
     Class::Refresh -> refresh if ($refresh) ;
 
     # Switch the magical hash temporarily.
-    local *dbline = "::_<$real_filename";
-
+    local *dbline = "::$dbfile_path";
+    
     my @bp ;
     for (my $i = $line; $i <= $end_line; $i++)
         {
@@ -1432,7 +1467,7 @@ sub req_can_break
             push @bp, { line => $line } ;    
             }        
         }
-        
+
     return { breakpoints => \@bp };
     }
 

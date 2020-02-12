@@ -32,9 +32,9 @@ has 'args' =>
 
 has 'env' =>
     (
-    isa => 'ArrayRef',
+    isa => 'HashRef',
     is  => 'ro',
-    default => sub { [] },
+    default => sub { {} },
     ) ; 
 
 has 'cwd' =>
@@ -123,7 +123,7 @@ sub lauch
     my $pid ;
     {
     local %ENV ;
-    foreach (@{$self -> env})
+    foreach (keys %{$self -> env})
         {
         $ENV{$_} = $self -> env -> {$_} ;    
         }
